@@ -1,0 +1,194 @@
+---
+
+- name: playbook
+  hosts: servers1
+  become: yes
+  gather_facts: false
+
+  tasks:
+
+  - name: off selinux
+    lineinfile:
+      path: /etc/selinux/config
+      regexp: 'SELINUX=enforcing'
+      line: SELINUX=disabled
+
+  - name: reboot
+    reboot:
+
+  - name: stop repo
+    shell: yum -qy module disable postgresql
+
+  - name: add repo
+    yum_repository:
+      name: epel
+      description: EPEL YUM repo
+      file: external_repos
+      baseurl: http://download.postgresql.org/pub/repos/yum/13/redhat/rhel-8-x86_64/
+      gpgcheck: no
+
+  - name: import key1
+    rpm_key:
+      state: present
+      key: http://download.postgresql.org/pub/repos/yum/RPM-GPG-KEY-PGDG
+
+  - name: import a key2
+    rpm_key:
+      state: present
+      key: http://download.postgresql.org/pub/repos/yum/RPM-GPG-KEY-PGDG-13
+
+  - name: install repo zabbix
+    shell: rpm -Uvh  https://repo.zabbix.com/zabbix/5.4/rhel/8/x86_64/zabbix-release-5.4-1.el8.noarch.rpm
+
+  - name: yum postgresql-13
+    shell: yum update -y; yum install -y postgresql13;  yum install -y postgresql13-server 
+
+  - name: yum postgresql-13-2
+    shell: yum install -y postgresql13-contrib; yum install -y libpq-devel
+
+  - name: init postgresql-13
+    shell: /usr/pgsql-13/bin/postgresql-13-setup initdb; systemctl enable postgresql-13; systemctl enable --now postgresql-13
+
+  - name: install psycorg
+    shell: yum install -y python3-psycopg2
+
+  - name: install zabbix-agent
+    shell: yum install -y zabbix-agent
+
+  - name: ip zabbix agent
+    shell: sed -i 's/Server=127.0.0.1/Server=192.168.0.21/g' /etc/zabbix/zabbix_agentd.conf
+
+  - name: replace peer with trust 
+    shell: sed -i 's/peer/trust/g' /var/lib/pgsql/13/data/pg_hba.conf
+
+  - name: replace ip in pg_hba.conf
+    shell: sed -i 's/127.0.0.1\/32/0.0.0.0\/0/g' /var/lib/pgsql/13/data/pg_hba.conf
+
+  - name: replace port in postgresql.conf
+    shell: sed -i 's/#port = 5432/port = 5432/g' /var/lib/pgsql/13/data/postgresql.conf
+
+  - name: replace scram-sha-256 with md5
+    shell: sed -i 's/scram-sha-256/md5/g' /var/lib/pgsql/13/data/postgresql.conf
+
+  - name: add md5 
+    shell: sed -i 's/scram-sha-256/md5/g' /var/lib/pgsql/13/data/pg_hba.conf
+
+  - name: add listen_addr
+    lineinfile:
+      path: /var/lib/pgsql/13/data/postgresql.conf
+      regexp: '#listen_addresses '
+      line: listen_addresses = '*'
+
+  - name: add password zabbix in pg_hba.conf
+    lineinfile:
+      dest: /var/lib/pgsql/13/data/pg_hba.conf
+      insertafter: '# replication privilege'
+      line: 'host    zabbix       zabbix         0.0.0.0/0                password'
+
+  - name: starting together os; restart psql
+    shell: systemctl enable zabbix-agent.service; systemctl start zabbix-agent.service; systemctl restart postgresql-13
+
+  - name: add passwd sql 
+    postgresql_user:
+      db=postgres
+      user=postgres
+      password=12345678 
+
+  - name: create zabbix user
+    postgresql_user:
+      name: zabbix
+      password: 12345678
+      role_attr_flags: CREATEDB,NOSUPERUSER
+
+  - name: create  db
+    postgresql_db:
+      name: zabbix
+      owner: zabbix
+      template: template0
+      encoding: UTF8
+      lc_collate: 'en_US.UTF-8'
+      lc_ctype: 'en_US.UTF-8'
+    become_user: zabbix
+
+  - name: dell firewalld
+    shell: yum remove -y firewalld
+    tags: rest
+
+- name: servers2
+  hosts: servers2
+  become: yes
+  gather_facts: false
+
+  tasks:
+
+  - name: selinux servers 2
+    lineinfile:
+      path: /etc/selinux/config
+      regexp: 'SELINUX=enforcing'
+      line: SELINUX=disabled
+
+  - name: reboot
+    reboot:
+
+  - name: install apache
+    shell: yum update -y; yum install -y httpd 
+
+  - name: start apache
+    systemd:
+      name: httpd.service
+      state: started
+
+  - name: starting together os
+    shell: systemctl enable httpd.service
+
+  - name: install repo zabbix
+    shell: rpm -Uvh https://repo.zabbix.com/zabbix/5.4/rhel/8/x86_64/zabbix-release-5.4-1.el8.noarch.rpm 
+
+  - name: install zabbix-1
+    shell: yum update -y; yum install -y zabbix-server-pgsql; yum install -y zabbix-web-pgsql
+
+  - name: install zabbix-2
+    shell: yum install -y zabbix-apache-conf; yum install -y zabbix-sql-scripts; yum install -y zabbix-agent
+
+  - name: copy create.sql.gz
+    fetch:
+      src: /usr/share/doc/zabbix-sql-scripts/postgresql/create.sql.gz
+      dest: /home/
+      flat: yes
+
+  - name: add ip zabbix-server
+    shell: sed -i 's/# DBHost=localhost/DBHost=192.168.0.20/g' /etc/zabbix/zabbix_server.conf
+
+  - name: add password DB
+    shell: sed -i 's/# DBPassword=/DBPassword=12345678/g' /etc/zabbix/zabbix_server.conf
+
+  - name: add port DB
+    shell: sed -i 's/# DBPort=/DBPort=5432/g' /etc/zabbix/zabbix_server.conf
+
+  - name: add ip zabbix-agent
+    shell: sed -i 's/Server=127.0.0.1/Server=192.168.0.21/g' /etc/zabbix/zabbix_agentd.conf
+
+  - name: starting together os
+    shell: systemctl enable zabbix-agent.service; systemctl enable zabbix-server.service
+
+  - name: restart server
+    shell: systemctl start zabbix-agent.service; systemctl start zabbix-server.service; systemctl restart httpd.service
+
+
+- name: 
+  hosts: servers1
+  become: yes
+  gather_facts: false
+
+  tasks:
+
+  - name: copy create.sql.gz
+    copy:
+      src: /home/create.sql.gz
+      dest: /home/
+      owner: root
+      group: root
+      mode: '0644'
+
+  - name: zcat
+    shell: zcat /home/create.sql.gz | sudo -u zabbix psql zabbix
